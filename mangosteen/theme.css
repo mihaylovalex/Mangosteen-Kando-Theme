@@ -1,0 +1,635 @@
+/* SPDX-FileCopyrightText: 2026 Alex Mihaylov */
+/* SPDX-License-Identifier: CC0-1.0 */
+
+/*
+ * Mangosteen v1.1.3 — Kando engine 1.
+ * Soft opening (0.8 -> 1 with a light settle), ease-in closing, layered plate/wedge
+ * motion, wedges bloom in on level change. Clean transparent background, animated
+ * clip-path wedges, single-pass alpha fill, real inlay stroke, separate center icon sizing,
+ * configurable anchored circular plate (fill, inner outline, optional center fill).
+ *
+ * EDITABLE SETTINGS are in the next two blocks. Colors are in theme.json5.
+ * Hover grows outward only, not sideways: this keeps all angular gaps
+ * stable at every menu depth (including the parent/back wedge).
+ */
+
+/* These properties MUST be registered: interpolation of an unregistered
+   custom property would simply snap at the end of the transition. */
+@property --rw-outer-grow {
+  syntax: '<number>';
+  inherits: true;
+  initial-value: 0;
+}
+@property --rw-appearance-scale {
+  syntax: '<number>';
+  inherits: true;
+  initial-value: 1;
+}
+
+#kando-menu {
+  /* Motion */
+  --rw-open-ms: 170ms;
+  --rw-close-ms: 145ms;
+  --rw-shape-ms: 150ms;
+  --rw-color-ms: 105ms;
+  --rw-icon-ms: 150ms;
+  --rw-center-ms: 140ms;
+  --rw-level-ms: 125ms;
+  --rw-open-scale: 0.8;           /* start scale when opening */
+  --rw-close-scale: 0.9;          /* end scale when closing (shallower = calmer) */
+  --rw-plate-follow: 0.5;         /* share of the scale the plate/center follow: 0 = static, 1 = same as wedges */
+  --rw-level-bloom: 0.94;         /* start scale of wedges on level change */
+  --rw-icon-bloom: 0.82;          /* start scale of icons on level change */
+  --rw-hover-icon-scale: 1.085;
+  --rw-press-icon-scale: 0.96;
+  --rw-ease: cubic-bezier(0.22, 0.8, 0.25, 1);          /* hover / shape */
+  --rw-ease-spring: cubic-bezier(0.34, 1.45, 0.64, 1);  /* opening: ~1% overshoot, then settles */
+  --rw-ease-out: cubic-bezier(0.16, 1, 0.3, 1);         /* soft deceleration */
+  --rw-ease-in: cubic-bezier(0.4, 0, 1, 1);             /* closing: accelerates away */
+  --rw-ease-inout: cubic-bezier(0.4, 0, 0.6, 1);        /* closing fade */
+
+  /* Dimensions are numeric pixels so CSS shape() and trig work together. */
+  --rw-canvas-size: 320;
+  --rw-canvas-center: 160;
+  --rw-outer-radius: 145;
+  --rw-inner-plate-radius: 60;
+  --rw-inner-padding: 3;
+  --rw-sector-gap: 3;
+  --rw-sector-corner: 8;
+  --rw-border-width: 1;                 /* sector inset outline (px, numeric) */
+  --rw-plate-outer-radius: 150;          /* round backing outer radius, px */
+  --rw-plate-inner-radius: 60;           /* backing central opening radius, px */
+  --rw-plate-border-width: 1;           /* plate outer + inner stroke, px */
+
+  /* Soft, shape-aware plate shadow. No hard spread / circular black halo. */
+  --rw-plate-shadow-near-y: 3px;
+  --rw-plate-shadow-near-blur: 6px;
+  --rw-plate-shadow-far-y: 10px;
+  --rw-plate-shadow-far-blur: 19px;
+
+  /* Parent direction arrow; radius offset from the middle of the back wedge. */
+  --rw-parent-arrow-size: 18px;   /* triangle width */
+  --rw-parent-arrow-height: 12px; /* triangle height */
+  --rw-parent-arrow-offset: 0px;
+  --rw-hover-outer-extra: 5;
+  --rw-parent-distance: 150px; /* fallback for Kando parent node distance */
+  --rw-icon-size: 38px;         /* ordinary child/back sector icons */
+  --rw-center-icon-size: 56px;  /* independent central icon size */
+  --rw-center-size: 120px;
+  --rw-title-size: 120px;
+  --rw-title-font-size: 14px;
+  --rw-title-padding-x: 0px;
+  --rw-title-padding-y: 5px;
+}
+
+/* Geometry is inherited by every node; Kando owns --dir-x/y and
+   --start-angle/end-angle. Never transition its placement transform. */
+.menu-node {
+  --size: var(--rw-canvas-size);
+  --plate: var(--rw-canvas-center);
+  --R: var(--rw-outer-radius);
+  --r: calc(var(--rw-inner-plate-radius) + var(--rw-inner-padding));
+  --gap: var(--rw-sector-gap);
+  --rc: var(--rw-sector-corner);
+  --mid: calc((var(--R) + var(--r)) / 2);
+  --child-distance: calc(var(--mid) * 1px);
+  --icon-size: var(--rw-icon-size);
+  --center-diameter: var(--rw-center-size);
+  --center-width: var(--rw-title-size);
+  --center-height: var(--rw-title-size);
+
+  /* Radial hover only. Side boundaries and neighbours remain unchanged. */
+  --rw-outer-grow: 0;
+  --rw-source-start: var(--start-angle);
+  --rw-source-end: var(--end-angle);
+  transition: --rw-outer-grow var(--rw-shape-ms) var(--rw-ease);
+}
+
+/* Kando fills the viewport with #kando-menu; its active .menu-node has
+   an inline transform:translate(screenX, screenY). Scaling either element
+   scales the coordinates as well. Scale the VISIBLE LAYERS at the active
+   centre instead; both fixed and freely positioned menus stay put. */
+#kando-menu {
+  --rw-appearance-scale: 1;
+  /* Centre disc, plate and centre icon follow the scale only partly, so the
+     wedges "catch up" with the plate and the menu gains depth. */
+  --rw-center-scale: calc(1 + (var(--rw-appearance-scale) - 1) * var(--rw-plate-follow));
+  opacity: 1 !important;
+  /* Opening: opacity finishes earlier than the scale (the menu "arrives" fast
+     and settles), scale itself is driven by the keyframes below, so it can
+     start from a different value than the closing end state. */
+  transition: opacity calc(var(--rw-open-ms) * 0.65) ease-out !important;
+  isolation: isolate;
+}
+#kando-menu:not(.hidden) {
+  animation: rw-open var(--rw-open-ms) var(--rw-ease-spring) backwards;
+}
+#kando-menu.hidden {
+  --rw-appearance-scale: var(--rw-close-scale);
+  --rw-close-dur: min(var(--rw-close-ms), var(--fade-out-duration, 200ms));
+  opacity: 0 !important;
+  /* Closing: scale accelerates away, opacity fades smoothly alongside it. */
+  transition:
+    --rw-appearance-scale var(--rw-close-dur) var(--rw-ease-in),
+    opacity var(--rw-close-dur) var(--rw-ease-inout) !important;
+}
+@keyframes rw-open {
+  from { --rw-appearance-scale: var(--rw-open-scale); }
+}
+/* Scale each sector canvas around the REAL menu centre, never its parent
+   positioning transform. Child icons additionally interpolate their radial
+   offset below. */
+.menu-node.child > .wedge-layer,
+.menu-node.parent > .menu-node.active > .wedge-layer {
+  scale: var(--rw-appearance-scale);
+  transform-origin: center;
+}
+.menu-node.active > .label-layer,
+.menu-node.active > .icon-layer {
+  scale: var(--rw-center-scale);
+  transform-origin: center;
+}
+
+/* THE CIRCULAR BACKING is attached to Kando's actual .active node (menu level).
+   A fixed viewport pseudo-element would incorrectly stay at the screen center when
+   Fixed Position Mode / Anchored Mode are disabled. The active node is at the
+   current menu origin; its local (0,0) is always the center of its ring. */
+.menu-node .plate-layer {
+  display: none;
+  position: absolute;
+  box-sizing: border-box;
+  width: calc(2 * var(--rw-plate-outer-radius) * 1px);
+  height: calc(2 * var(--rw-plate-outer-radius) * 1px);
+  top: calc(-1 * var(--rw-plate-outer-radius) * 1px);
+  left: calc(-1 * var(--rw-plate-outer-radius) * 1px);
+  border-radius: 50%;
+  pointer-events: none;
+  z-index: 0;
+  /* Paint only the central disc. Transparent means a true gap in the plate,
+     independent of the color of the center-menu item drawn on top. */
+  background: radial-gradient(
+    circle at center,
+    var(--plate-center-color) 0 calc(var(--rw-plate-inner-radius) * 1px),
+    transparent calc(var(--rw-plate-inner-radius) * 1px) 100%
+  );
+  scale: var(--rw-center-scale);
+  transform-origin: 50% 50%;
+  /* filter follows the real alpha of the ring (and the optional center fill),
+     unlike box-shadow, which creates a flat shadow for a solid disk. */
+  filter:
+    drop-shadow(0 var(--rw-plate-shadow-near-y) var(--rw-plate-shadow-near-blur) var(--plate-shadow-near-color))
+    drop-shadow(0 var(--rw-plate-shadow-far-y) var(--rw-plate-shadow-far-blur) var(--plate-shadow-far-color));
+}
+/* No fade here: the old plate disappears and the new one appears in the same
+   frame, so in anchored mode the plate stays seamless on level change
+   (the opening fade comes from #kando-menu itself). */
+.menu-node.active > .plate-layer {
+  display: block;
+}
+
+/* Plate ring is painted ONCE, with its centre cut out using a mask.
+   No additional translucent backing is painted under the hole or under
+   the ring: translucent plate colors retain their requested alpha. */
+.menu-node .plate-layer::before,
+.menu-node .plate-layer::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  pointer-events: none;
+}
+.menu-node .plate-layer::before {
+  background: var(--plate-color);
+  -webkit-mask-image: radial-gradient(
+    circle at center,
+    transparent 0 calc(var(--rw-plate-inner-radius) * 1px),
+    black calc(var(--rw-plate-inner-radius) * 1px) 100%
+  );
+  mask-image: radial-gradient(
+    circle at center,
+    transparent 0 calc(var(--rw-plate-inner-radius) * 1px),
+    black calc(var(--rw-plate-inner-radius) * 1px) 100%
+  );
+}
+
+/* True inset stroke: only the two NARROW contour bands (inner and outer).
+   The overlay blends onto the already-painted plate fill. It never repaints
+   the plate center or doubles the opacity of translucent plate colors. */
+.menu-node .plate-layer::after {
+  background: var(--plate-outline-color);
+  -webkit-mask-image: radial-gradient(
+    circle at center,
+    transparent 0 calc(var(--rw-plate-inner-radius) * 1px),
+    black calc(var(--rw-plate-inner-radius) * 1px)
+      calc((var(--rw-plate-inner-radius) + var(--rw-plate-border-width)) * 1px),
+    transparent calc((var(--rw-plate-inner-radius) + var(--rw-plate-border-width)) * 1px)
+      calc((var(--rw-plate-outer-radius) - var(--rw-plate-border-width)) * 1px),
+    black calc((var(--rw-plate-outer-radius) - var(--rw-plate-border-width)) * 1px) 100%
+  );
+  mask-image: radial-gradient(
+    circle at center,
+    transparent 0 calc(var(--rw-plate-inner-radius) * 1px),
+    black calc(var(--rw-plate-inner-radius) * 1px)
+      calc((var(--rw-plate-inner-radius) + var(--rw-plate-border-width)) * 1px),
+    transparent calc((var(--rw-plate-inner-radius) + var(--rw-plate-border-width)) * 1px)
+      calc((var(--rw-plate-outer-radius) - var(--rw-plate-border-width)) * 1px),
+    black calc((var(--rw-plate-outer-radius) - var(--rw-plate-border-width)) * 1px) 100%
+  );
+}
+
+/* Dim the screen without scaling its pixels or anchoring it to menu coords. */
+#kando-menu::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  background: var(--dim-color);
+  pointer-events: none;
+  z-index: -1;
+}
+
+/* Child centres remain at original base radius, regardless of state.
+   This prevents the Kando marking-mode gesture from shifting around. */
+.menu-node.child {
+  transform: translate(
+    calc(var(--child-distance) * var(--dir-x)),
+    calc(var(--child-distance) * var(--dir-y))
+  );
+  z-index: 3;
+}
+.menu-node.child.dragged {
+  transform: translate(
+    calc(var(--child-distance) * var(--dir-x)),
+    calc(var(--child-distance) * var(--dir-y))
+  ) !important;
+}
+.menu-node.active { z-index: 4; }
+.menu-node.child.hovered { z-index: 9; }
+.menu-node.grandchild,
+.menu-node.parent > .menu-node:not(.active) {
+  visibility: hidden;
+  pointer-events: none;
+}
+
+/* HOVER. Do not expand the angular width: a menu theme cannot reliably
+   identify angular neighbours at every depth and with custom fixed angles.
+   This approach works for child items AND the parent/back sector without
+   touching nearby sectors, regardless of item order or anchoring mode. */
+.menu-node.child.hovered,
+.menu-node.parent.hovered:has(> .menu-node.active),
+.menu-node.parent.hovered:has(> .menu-node.active) > .menu-node.active {
+  --rw-outer-grow: var(--rw-hover-outer-extra);
+}
+
+/* Three layers only, all non-interactive so gesture hit testing stays Kando's. */
+.menu-node .wedge-layer,
+.menu-node .icon-layer,
+.menu-node .label-layer {
+  position: absolute;
+  display: block;
+  box-sizing: border-box;
+  pointer-events: none;
+  opacity: 0;
+}
+
+/* COMPOSITING (important for transparent colors):
+   .wedge-layer paints the sector background exactly ONCE (any alpha allowed).
+   Its ::before is an overlay cut to a 1px INNER CONTOUR only:
+     parent's outer clip-path ∩ (canvas - inset sector clip-path).
+   No re-painted inset fill / ::after. Consequently #000000CC keeps 80% alpha
+   through the whole interior, while the rim blends over THAT fill rather than
+   behaving as a separate underlay. This also works on hover and submenu sectors.
+   shape(evenodd ...) is used for the hole; the rectangle covers the canvas. */
+.menu-node > .wedge-layer,
+.menu-node > .wedge-layer::before {
+  --rw-r-out: calc(var(--R) + var(--rw-outer-grow) - var(--rw-inset));
+  --rw-r-in: calc(var(--r) + var(--rw-inset));
+  --rw-gap: calc(var(--gap) + 2 * var(--rw-inset));
+  --rw-corner: calc(var(--rc) - var(--rw-inset));
+  --rw-d: calc(var(--rw-gap) / 2 + var(--rw-corner));
+  --rw-ro: calc(var(--rw-r-out) - var(--rw-corner));
+  --rw-ri: calc(var(--rw-r-in) + var(--rw-corner));
+  --rw-to: sqrt(calc(var(--rw-ro) * var(--rw-ro) - var(--rw-d) * var(--rw-d)));
+  --rw-ti: sqrt(calc(var(--rw-ri) * var(--rw-ri) - var(--rw-d) * var(--rw-d)));
+  --rw-ko: calc(var(--rw-r-out) / var(--rw-ro));
+  --rw-ki: calc(var(--rw-r-in) / var(--rw-ri));
+  --rw-a1: var(--rw-source-start);
+  --rw-a2: var(--rw-source-end);
+  --rw-s1: sin(var(--rw-a1));
+  --rw-c1: cos(var(--rw-a1));
+  --rw-s2: sin(var(--rw-a2));
+  --rw-c2: cos(var(--rw-a2));
+  --rw-o1x: calc(var(--rw-to) * var(--rw-s1) + var(--rw-d) * var(--rw-c1));
+  --rw-o1y: calc(var(--rw-d) * var(--rw-s1) - var(--rw-to) * var(--rw-c1));
+  --rw-o2x: calc(var(--rw-to) * var(--rw-s2) - var(--rw-d) * var(--rw-c2));
+  --rw-o2y: calc(-1 * var(--rw-to) * var(--rw-c2) - var(--rw-d) * var(--rw-s2));
+  --rw-i1x: calc(var(--rw-ti) * var(--rw-s1) + var(--rw-d) * var(--rw-c1));
+  --rw-i1y: calc(var(--rw-d) * var(--rw-s1) - var(--rw-ti) * var(--rw-c1));
+  --rw-i2x: calc(var(--rw-ti) * var(--rw-s2) - var(--rw-d) * var(--rw-c2));
+  --rw-i2y: calc(-1 * var(--rw-ti) * var(--rw-c2) - var(--rw-d) * var(--rw-s2));
+  --rw-Ax: calc((var(--plate) + var(--rw-o1x) * var(--rw-ko)) * 1px);
+  --rw-Ay: calc((var(--plate) + var(--rw-o1y) * var(--rw-ko)) * 1px);
+  --rw-Bx: calc((var(--plate) + var(--rw-o2x) * var(--rw-ko)) * 1px);
+  --rw-By: calc((var(--plate) + var(--rw-o2y) * var(--rw-ko)) * 1px);
+  --rw-Cx: calc((var(--plate) + var(--rw-o2x) + var(--rw-corner) * var(--rw-c2)) * 1px);
+  --rw-Cy: calc((var(--plate) + var(--rw-o2y) + var(--rw-corner) * var(--rw-s2)) * 1px);
+  --rw-Dx: calc((var(--plate) + var(--rw-i2x) + var(--rw-corner) * var(--rw-c2)) * 1px);
+  --rw-Dy: calc((var(--plate) + var(--rw-i2y) + var(--rw-corner) * var(--rw-s2)) * 1px);
+  --rw-Ex: calc((var(--plate) + var(--rw-i2x) * var(--rw-ki)) * 1px);
+  --rw-Ey: calc((var(--plate) + var(--rw-i2y) * var(--rw-ki)) * 1px);
+  --rw-Fx: calc((var(--plate) + var(--rw-i1x) * var(--rw-ki)) * 1px);
+  --rw-Fy: calc((var(--plate) + var(--rw-i1y) * var(--rw-ki)) * 1px);
+  --rw-Gx: calc((var(--plate) + var(--rw-i1x) - var(--rw-corner) * var(--rw-c1)) * 1px);
+  --rw-Gy: calc((var(--plate) + var(--rw-i1y) - var(--rw-corner) * var(--rw-s1)) * 1px);
+  --rw-Hx: calc((var(--plate) + var(--rw-o1x) - var(--rw-corner) * var(--rw-c1)) * 1px);
+  --rw-Hy: calc((var(--plate) + var(--rw-o1y) - var(--rw-corner) * var(--rw-s1)) * 1px);
+  clip-path: shape(
+    from var(--rw-Ax) var(--rw-Ay),
+    arc to var(--rw-Bx) var(--rw-By) of calc(var(--rw-r-out) * 1px) cw,
+    arc to var(--rw-Cx) var(--rw-Cy) of calc(var(--rw-corner) * 1px) cw,
+    line to var(--rw-Dx) var(--rw-Dy),
+    arc to var(--rw-Ex) var(--rw-Ey) of calc(var(--rw-corner) * 1px) cw,
+    arc to var(--rw-Fx) var(--rw-Fy) of calc(var(--rw-r-in) * 1px) ccw,
+    arc to var(--rw-Gx) var(--rw-Gy) of calc(var(--rw-corner) * 1px) cw,
+    line to var(--rw-Hx) var(--rw-Hy),
+    arc to var(--rw-Ax) var(--rw-Ay) of calc(var(--rw-corner) * 1px) cw,
+    close
+  );
+}
+
+.menu-node > .wedge-layer {
+  --rw-inset: 0;
+  width: calc(var(--size) * 1px);
+  height: calc(var(--size) * 1px);
+  background-color: var(--wedge-color);
+  z-index: 1;
+  transition: background-color var(--rw-color-ms) ease-out;
+}
+/* Pseudo element is the BORDER ONLY, not an additional filled sector. */
+.menu-node > .wedge-layer::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  display: block;
+  pointer-events: none;
+  --rw-inset: var(--rw-border-width);
+  background: var(--outline-color);
+  /* Even-odd cutout: rectangle MINUS the fully inset sector contour.
+     The parent itself already clips to the OUTER sector shape. */
+  clip-path: shape(
+    evenodd from 0px 0px,
+    line to 100% 0px,
+    line to 100% 100%,
+    line to 0px 100%,
+    close,
+    move to var(--rw-Ax) var(--rw-Ay),
+    arc to var(--rw-Bx) var(--rw-By) of calc(var(--rw-r-out) * 1px) cw,
+    arc to var(--rw-Cx) var(--rw-Cy) of calc(var(--rw-corner) * 1px) cw,
+    line to var(--rw-Dx) var(--rw-Dy),
+    arc to var(--rw-Ex) var(--rw-Ey) of calc(var(--rw-corner) * 1px) cw,
+    arc to var(--rw-Fx) var(--rw-Fy) of calc(var(--rw-r-in) * 1px) ccw,
+    arc to var(--rw-Gx) var(--rw-Gy) of calc(var(--rw-corner) * 1px) cw,
+    line to var(--rw-Hx) var(--rw-Hy),
+    arc to var(--rw-Ax) var(--rw-Ay) of calc(var(--rw-corner) * 1px) cw,
+    close
+  );
+}
+.menu-node.child.hovered > .wedge-layer,
+.menu-node.parent.hovered > .menu-node.active > .wedge-layer {
+  background-color: var(--hover-color);
+}
+
+/* The entire sector canvas remains centred at the current *menu level*,
+   not at each child icon. Exactly cancel Kando's child translation. */
+.menu-node.child > .wedge-layer {
+  top: calc(var(--plate) * -1px - var(--child-distance) * var(--dir-y));
+  left: calc(var(--plate) * -1px - var(--child-distance) * var(--dir-x));
+  opacity: 1;
+}
+.menu-node.parent > .menu-node.active {
+  --rw-source-start: var(--parent-start-angle);
+  --rw-source-end: var(--parent-end-angle);
+}
+.menu-node.parent > .menu-node.active > .wedge-layer {
+  top: calc(var(--plate) * -1px);
+  left: calc(var(--plate) * -1px);
+  opacity: 1;
+}
+
+/* When a menu level changes, new wedges (and the back wedge) bloom in: a quick
+   fade plus a slight growth around the real menu centre. They don't travel
+   toward a previous sub-menu, preserving fixed and anchored centres.
+   `backwards` fill: nothing lingers after the animation, so hover and the
+   opening scale keep full control. `transform` is free on the wedge canvas
+   (the opening scale uses the separate `scale` property). */
+.menu-node.child > .wedge-layer,
+.menu-node.parent > .menu-node.active > .wedge-layer {
+  animation: rw-wedge-in var(--rw-level-ms) var(--rw-ease-out) backwards;
+}
+@keyframes rw-wedge-in {
+  from { opacity: 0; transform: scale(var(--rw-level-bloom)); }
+}
+/* Icons settle in from slightly smaller; `to` is the live value, so the hover
+   transition on `scale` is not disturbed after the animation ends. */
+.menu-node.child > .icon-layer > .icon-container {
+  animation: rw-icon-in var(--rw-level-ms) var(--rw-ease-out) backwards;
+}
+@keyframes rw-icon-in {
+  from { scale: var(--rw-icon-bloom); }
+}
+
+/* Icons follow the radial centre when the hovered sector grows outward.
+   The Kando node transform (input/marking position) stays fixed. */
+.menu-node .icon-layer {
+  top: calc(var(--icon-size) / -2);
+  left: calc(var(--icon-size) / -2);
+  width: var(--icon-size);
+  height: var(--icon-size);
+  color: var(--text-color);
+  z-index: 6;
+  transition: opacity var(--rw-center-ms) var(--rw-ease-out);
+}
+.menu-node.child > .icon-layer,
+.menu-node.active > .icon-layer,
+.menu-node.parent:has(> .menu-node.active) > .icon-layer { opacity: 1; }
+
+/* The mid-angle and mid-radius are evaluated from the same geometry as the
+   sector clip. Our translate is only the difference from Kando's static node. */
+.menu-node.child > .icon-layer {
+  --rw-item-mid: calc((var(--R) + var(--rw-outer-grow) + var(--r)) / 2);
+  --rw-item-angle: calc((var(--start-angle) + var(--end-angle)) / 2);
+  transform: translate(
+    calc((var(--rw-item-mid) * var(--rw-appearance-scale) * sin(var(--rw-item-angle))
+      - var(--mid) * var(--dir-x)) * 1px),
+    calc((-1 * var(--rw-item-mid) * var(--rw-appearance-scale) * cos(var(--rw-item-angle))
+      - var(--mid) * var(--dir-y)) * 1px)
+  );
+  scale: var(--rw-appearance-scale);
+}
+/* Independent size adjustment for the ACTIVE CENTER icon.
+   Back-sector/child icons keep --rw-icon-size; top/left recenter automatically. */
+.menu-node.active > .icon-layer {
+  --icon-size: var(--rw-center-icon-size);
+  z-index: 8;
+}
+.menu-node.active:has(> .menu-node.child.hovered) > .icon-layer,
+.menu-node.parent.hovered > .menu-node.active > .icon-layer { opacity: 0; }
+
+/* Kando defines the true parent/back selection wedge with these angles.
+   Use its midpoint, not the parent node's (variable) physical position: that
+   position drifts when Anchored / Fixed Position Mode are disabled. */
+.menu-node.parent:has(> .menu-node.active) {
+  --rw-parent-mid-base: calc((var(--parent-start-angle) + var(--parent-end-angle)) / 2);
+  z-index: 3;
+}
+
+/* Suppress the old, offset-prone parent icon. Keep Kando's original text-layer
+   handling unchanged. The arrow is attached to the ACTIVE submenu's origin. */
+.menu-node.parent:has(> .menu-node.active) > .icon-layer {
+  display: none;
+}
+
+/* The arrow is part of the actual back WEDGE, not a pseudo-element of the
+   moving active .menu-node. Its containing block is the 320px sector canvas,
+   so the same geometry and clipping apply in every navigation mode.
+   The wedge already has ::before for its inner outline; ::after is the arrow. */
+.menu-node.parent > .menu-node.active > .wedge-layer::after {
+  content: '';
+  position: absolute;
+  display: block;
+  box-sizing: border-box;
+  pointer-events: none;
+  z-index: 2;
+  width: var(--rw-parent-arrow-size);
+  height: var(--rw-parent-arrow-height);
+  --rw-arrow-radius: calc((var(--R) + var(--r) + var(--rw-outer-grow)) / 2 * 1px + var(--rw-parent-arrow-offset));
+  left: calc(var(--plate) * 1px + var(--rw-arrow-radius) * sin(var(--rw-parent-mid-base)) - var(--rw-parent-arrow-size) / 2);
+  top: calc(var(--plate) * 1px - var(--rw-arrow-radius) * cos(var(--rw-parent-mid-base)) - var(--rw-parent-arrow-height) / 2);
+  background-color: var(--parent-arrow-color);
+  /* A simple ▼ triangle. Rotate 180deg to face Kando's 0deg (up);
+     further clockwise rotation follows the real parent-wedge direction. */
+  clip-path: polygon(0% 0%, 100% 0%, 50% 100%);
+  transform: rotate(calc(var(--rw-parent-mid-base) + 180deg));
+  transform-origin: 50% 50%;
+  scale: 1;
+  transition:
+    background-color var(--rw-icon-ms) var(--rw-ease),
+    scale var(--rw-icon-ms) var(--rw-ease),
+    left var(--rw-shape-ms) var(--rw-ease),
+    top var(--rw-shape-ms) var(--rw-ease);
+}
+.menu-node.parent.hovered > .menu-node.active > .wedge-layer::after {
+  background-color: var(--parent-arrow-hover-color);
+  scale: var(--rw-hover-icon-scale);
+}
+.menu-node.parent.hovered.clicked > .menu-node.active > .wedge-layer::after {
+  scale: var(--rw-press-icon-scale);
+}
+
+.menu-node .icon-layer > .icon-container {
+  width: 100% !important;
+  height: 100% !important;
+  margin: 0;
+  opacity: 1;
+  color: var(--text-color);
+  transform-origin: center;
+  transition: scale var(--rw-icon-ms) var(--rw-ease), color var(--rw-icon-ms) var(--rw-ease);
+}
+.menu-node.child.hovered > .icon-layer > .icon-container,
+.menu-node.parent.hovered:has(> .menu-node.active) > .icon-layer > .icon-container {
+  scale: var(--rw-hover-icon-scale);
+  color: var(--text-hover-color);
+}
+
+.menu-node.active.hovered > .icon-layer > .icon-container {
+  color: var(--text-hover-color);
+}
+
+.menu-node.child.hovered.clicked > .icon-layer > .icon-container,
+.menu-node.parent.hovered.clicked:has(> .menu-node.active) > .icon-layer > .icon-container {
+  scale: var(--rw-press-icon-scale);
+}
+.menu-node :is(.icon-layer > .icon-container > img, .icon-layer > .icon-container > svg) {
+  display: block;
+  width: 100%;
+  height: 100%;
+  max-width: none;
+  max-height: none;
+}
+
+/* Central item: same dimensions as user's new revision (120px circular).
+   Name replaces the glyph on hover; no sliding in from the child. */
+.menu-node .label-layer {
+  top: calc(var(--center-diameter) / -2);
+  left: calc(var(--center-diameter) / -2);
+  width: var(--center-diameter);
+  height: var(--center-diameter);
+  display: flex;
+  padding: 0;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  border-radius: 999px;
+  border: 1px solid var(--outline-color);
+  background: var(--center-color);
+  color: transparent;
+  font-family: 'Segoe UI Variable Text', 'Segoe UI', system-ui, sans-serif;
+  font-size: 0;
+  font-weight: 700;
+  line-height: 1.25;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  word-break: normal;
+  text-wrap: balance;
+  text-align: center;
+  z-index: 7;
+  transition:
+    opacity var(--rw-center-ms) ease-out,
+    background-color var(--rw-color-ms) ease-out,
+    top var(--rw-center-ms) var(--rw-ease),
+    left var(--rw-center-ms) var(--rw-ease),
+    width var(--rw-center-ms) var(--rw-ease),
+    height var(--rw-center-ms) var(--rw-ease);
+}
+.menu-node.active > .label-layer { opacity: 1; }
+.menu-node.active.hovered > .label-layer { background: var(--hover-color); }
+.menu-node.active:has(> .menu-node.child.hovered) > .label-layer,
+.menu-node.parent.hovered > .menu-node.active > .label-layer {
+  width: var(--center-width);
+  height: var(--center-height);
+  top: calc(var(--center-height) / -2);
+  left: calc(var(--center-width) / -2);
+}
+/* Each Kando name stays at the central title location even when invisible. */
+.menu-node.child:not(.active) > .label-layer,
+.menu-node.parent:has(> .menu-node.active) > .label-layer {
+  width: var(--center-width);
+  height: var(--center-height);
+  top: calc(var(--center-height) / -2);
+  left: calc(var(--center-width) / -2);
+  padding: var(--rw-title-padding-y) var(--rw-title-padding-x);
+  border-radius: 50%;
+  background: transparent;
+  border: 0;
+  color: var(--text-color);
+  font-size: var(--rw-title-font-size);
+  opacity: 0;
+  z-index: 9;
+}
+.menu-node.child:not(.active) > .label-layer {
+  transform: translate(
+    calc(-1 * var(--child-distance) * var(--dir-x)),
+    calc(-1 * var(--child-distance) * var(--dir-y))
+  );
+}
+/* Parent name stays available even though its unstable icon is replaced. */
+.menu-node.parent:has(> .menu-node.active) > .label-layer {
+  transform: translate(
+    calc(-1 * var(--rw-parent-distance) * sin(var(--rw-parent-mid-base))),
+    calc(var(--rw-parent-distance) * cos(var(--rw-parent-mid-base)))
+  );
+}
+.menu-node.child.hovered:not(.active) > .label-layer,
+.menu-node.parent.hovered:has(> .menu-node.active) > .label-layer { opacity: 1; }
+
+.menu-node .connector,
+.center-text { display: none !important; }

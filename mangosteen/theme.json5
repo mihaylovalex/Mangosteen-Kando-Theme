@@ -1,0 +1,53 @@
+// SPDX-FileCopyrightText: 2026 Alex Mihaylov
+// SPDX-License-Identifier: CC0-1.0
+
+{
+  name: 'Mangosteen',
+  author: 'Alex Mihaylov',
+  license: 'CC0-1.0',
+  themeVersion: '1.1.3',
+  engineVersion: 1,
+
+  // Used by Kando to keep the menu within the display.
+  maxMenuRadius: 160,
+  centerTextWrapWidth: 100,
+  drawChildrenBelow: false,
+  childTransitionTime: 120,
+  drawCenterText: false,
+  drawSelectionWedges: false,
+  drawWedgeSeparators: false,
+
+  // All adjustable colors. Alpha is fully supported, including for the plate.
+  colors: {
+    'wedge-color': '#292929',
+    'center-color': 'transparent',
+    'hover-color': '#692036',
+    'text-color': '#FFFFFF',
+    'text-hover-color': '#FFFFFF',
+    'outline-color': 'transparent',
+    'dim-color': '#14141480',
+
+    // Circular backing plate. The outline overlays the fill INSIDE the ring.
+    // plate-center-color is the middle disk; 'transparent' makes a real hole.
+    // center-color is intentionally 'transparent' by default so this
+    // independent plate-center-color remains visible (hover still works).
+    // Set center-color to a color if you want a separate opaque central item.
+    'plate-color': '#1d1d1d',
+    'plate-outline-color': 'transparent',
+    'plate-center-color': '#1d1d1d',
+    // Only the translucent shadow colors live here. Shape and dimensions in CSS.
+    'plate-shadow-near-color': 'rgba(0, 0, 0, 0.16)',
+    'plate-shadow-far-color': 'rgba(0, 0, 0, 0.10)',
+    // Arrow in the back wedge points toward the parent level.
+    'parent-arrow-color': '#FFFFFF',
+    'parent-arrow-hover-color': '#FFFFFF',
+  },
+
+  // Layer order: plate behind wedges; foreground icons and text unaffected.
+  layers: [
+    { class: 'icon-layer', content: 'icon' },
+    { class: 'label-layer', content: 'name' },
+    { class: 'wedge-layer', content: 'none' },
+    { class: 'plate-layer', content: 'none' },
+  ],
+}
