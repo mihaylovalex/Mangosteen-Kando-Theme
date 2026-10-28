@@ -1,3 +1,4 @@
+![Mangosteen Cover](/img.jpg)
 # Mangosteen for Kando
 
 A modern, minimalist, and highly customizable radial menu theme for [Kando](https://kando.menu/).
