@@ -2,7 +2,7 @@
 /* SPDX-License-Identifier: CC0-1.0 */
 
 /*
- * Mangosteen v1.1.3 — Kando engine 1.
+ * Mangosteen transition preview 1.1.8 — Kando engine 1.
  * Soft opening (0.8 -> 1 with a light settle), ease-in closing, layered plate/wedge
  * motion, wedges bloom in on level change. Clean transparent background, animated
  * clip-path wedges, single-pass alpha fill, real inlay stroke, separate center icon sizing,
@@ -72,7 +72,6 @@
   --rw-parent-arrow-height: 12px; /* triangle height */
   --rw-parent-arrow-offset: 0px;
   --rw-hover-outer-extra: 5;
-  --rw-parent-distance: 150px; /* fallback for Kando parent node distance */
   --rw-icon-size: 38px;         /* ordinary child/back sector icons */
   --rw-center-icon-size: 56px;  /* independent central icon size */
   --rw-center-size: 120px;
@@ -140,7 +139,7 @@
    positioning transform. Child icons additionally interpolate their radial
    offset below. */
 .menu-node.child > .wedge-layer,
-.menu-node.parent > .menu-node.active > .wedge-layer {
+.menu-node.parent > .menu-node.active > .back-wedge-layer {
   scale: var(--rw-appearance-scale);
   transform-origin: center;
 }
@@ -264,8 +263,11 @@
 }
 .menu-node.active { z-index: 4; }
 .menu-node.child.hovered { z-index: 9; }
-.menu-node.grandchild,
-.menu-node.parent > .menu-node:not(.active) {
+/* Only hide inactive off-path branches. Kando marks ALL ancestors of the
+   active submenu as .parent, not just its immediate parent. Hiding every
+   non-.active child of a .parent makes nesting >= 2 disappear because the
+   intermediate .parent (and its entire subtree) becomes invisible. */
+.menu-node.grandchild {
   visibility: hidden;
   pointer-events: none;
 }
@@ -280,8 +282,9 @@
   --rw-outer-grow: var(--rw-hover-outer-extra);
 }
 
-/* Three layers only, all non-interactive so gesture hit testing stays Kando's. */
+/* The visual layers are non-interactive; Kando retains gesture hit testing. */
 .menu-node .wedge-layer,
+.menu-node .back-wedge-layer,
 .menu-node .icon-layer,
 .menu-node .label-layer {
   position: absolute;
@@ -300,7 +303,9 @@
    behaving as a separate underlay. This also works on hover and submenu sectors.
    shape(evenodd ...) is used for the hole; the rectangle covers the canvas. */
 .menu-node > .wedge-layer,
-.menu-node > .wedge-layer::before {
+.menu-node > .back-wedge-layer,
+.menu-node > .wedge-layer::before,
+.menu-node > .back-wedge-layer::before {
   --rw-r-out: calc(var(--R) + var(--rw-outer-grow) - var(--rw-inset));
   --rw-r-in: calc(var(--r) + var(--rw-inset));
   --rw-gap: calc(var(--gap) + 2 * var(--rw-inset));
@@ -356,7 +361,12 @@
   );
 }
 
-.menu-node > .wedge-layer {
+/* Crucial: the dedicated return-sector canvas NEVER paints while this node is
+   a regular child. Thus its background color cannot inherit an in-flight
+   hover transition when the node is promoted from .child to .active. */
+.menu-node > .back-wedge-layer { display: none; }
+
+.menu-node > :is(.wedge-layer, .back-wedge-layer) {
   --rw-inset: 0;
   width: calc(var(--size) * 1px);
   height: calc(var(--size) * 1px);
@@ -365,7 +375,7 @@
   transition: background-color var(--rw-color-ms) ease-out;
 }
 /* Pseudo element is the BORDER ONLY, not an additional filled sector. */
-.menu-node > .wedge-layer::before {
+.menu-node > :is(.wedge-layer, .back-wedge-layer)::before {
   content: '';
   position: absolute;
   inset: 0;
@@ -394,7 +404,7 @@
   );
 }
 .menu-node.child.hovered > .wedge-layer,
-.menu-node.parent.hovered > .menu-node.active > .wedge-layer {
+.menu-node.parent.hovered > .menu-node.active > .back-wedge-layer {
   background-color: var(--hover-color);
 }
 
@@ -409,34 +419,19 @@
   --rw-source-start: var(--parent-start-angle);
   --rw-source-end: var(--parent-end-angle);
 }
-.menu-node.parent > .menu-node.active > .wedge-layer {
+/* The existing child wedge is switched off; the separate return wedge is
+   switched on with its own, already configured normal fill and hover timing. */
+.menu-node.parent > .menu-node.active > .wedge-layer { display: none; }
+.menu-node.parent > .menu-node.active > .back-wedge-layer {
+  display: block;
   top: calc(var(--plate) * -1px);
   left: calc(var(--plate) * -1px);
   opacity: 1;
 }
+/* A fresh back-wedge-layer avoids the stale child hover-color transition.
+   Parent-sector hover/unhover keeps the standard --rw-color-ms transition. */
 
-/* When a menu level changes, new wedges (and the back wedge) bloom in: a quick
-   fade plus a slight growth around the real menu centre. They don't travel
-   toward a previous sub-menu, preserving fixed and anchored centres.
-   `backwards` fill: nothing lingers after the animation, so hover and the
-   opening scale keep full control. `transform` is free on the wedge canvas
-   (the opening scale uses the separate `scale` property). */
-.menu-node.child > .wedge-layer,
-.menu-node.parent > .menu-node.active > .wedge-layer {
-  animation: rw-wedge-in var(--rw-level-ms) var(--rw-ease-out) backwards;
-}
-@keyframes rw-wedge-in {
-  from { opacity: 0; transform: scale(var(--rw-level-bloom)); }
-}
-/* Icons settle in from slightly smaller; `to` is the live value, so the hover
-   transition on `scale` is not disturbed after the animation ends. */
-.menu-node.child > .icon-layer > .icon-container {
-  animation: rw-icon-in var(--rw-level-ms) var(--rw-ease-out) backwards;
-}
-@keyframes rw-icon-in {
-  from { scale: var(--rw-icon-bloom); }
-}
-
+/* Level transitions are configured by the selected experimental preset. */
 /* Icons follow the radial centre when the hovered sector grows outward.
    The Kando node transform (input/marking position) stays fixed. */
 .menu-node .icon-layer {
@@ -488,11 +483,10 @@
   display: none;
 }
 
-/* The arrow is part of the actual back WEDGE, not a pseudo-element of the
-   moving active .menu-node. Its containing block is the 320px sector canvas,
-   so the same geometry and clipping apply in every navigation mode.
-   The wedge already has ::before for its inner outline; ::after is the arrow. */
-.menu-node.parent > .menu-node.active > .wedge-layer::after {
+/* The arrow is part of the dedicated back WEDGE. Its containing block is
+   the 320px sector canvas, so geometry and clipping remain stable in all
+   positioning modes. ::before is the stroke; ::after is the triangle. */
+.menu-node.parent > .menu-node.active > .back-wedge-layer::after {
   content: '';
   position: absolute;
   display: block;
@@ -517,11 +511,11 @@
     left var(--rw-shape-ms) var(--rw-ease),
     top var(--rw-shape-ms) var(--rw-ease);
 }
-.menu-node.parent.hovered > .menu-node.active > .wedge-layer::after {
+.menu-node.parent.hovered > .menu-node.active > .back-wedge-layer::after {
   background-color: var(--parent-arrow-hover-color);
   scale: var(--rw-hover-icon-scale);
 }
-.menu-node.parent.hovered.clicked > .menu-node.active > .wedge-layer::after {
+.menu-node.parent.hovered.clicked > .menu-node.active > .back-wedge-layer::after {
   scale: var(--rw-press-icon-scale);
 }
 
@@ -591,6 +585,8 @@
     height var(--rw-center-ms) var(--rw-ease);
 }
 .menu-node.active > .label-layer { opacity: 1; }
+/* Central hover behavior from v1.1.5 is preserved; the return-sector
+   transition is fixed independently in .back-wedge-layer. */
 .menu-node.active.hovered > .label-layer { background: var(--hover-color); }
 .menu-node.active:has(> .menu-node.child.hovered) > .label-layer,
 .menu-node.parent.hovered > .menu-node.active > .label-layer {
@@ -621,15 +617,80 @@
     calc(-1 * var(--child-distance) * var(--dir-y))
   );
 }
-/* Parent name stays available even though its unstable icon is replaced. */
-.menu-node.parent:has(> .menu-node.active) > .label-layer {
-  transform: translate(
-    calc(-1 * var(--rw-parent-distance) * sin(var(--rw-parent-mid-base))),
-    calc(var(--rw-parent-distance) * cos(var(--rw-parent-mid-base)))
-  );
+/* Parent names were previously rendered on the parent node and moved to the
+   active center by a fixed --rw-parent-distance approximation. Kando can move
+   ancestors by arbitrary offsets, so that caused names such as "Пример меню"
+   to drift off-center in unanchored mode and at deeper submenu levels.
+
+   Kando exposes the original name on each .menu-node as data-name. Resolve
+   attr() ON THE IMMEDIATE PARENT and inherit its value on the active child.
+   This keeps the exact parent title, without JS, fixed distances, or hardcoding. */
+.menu-node.parent:has(> .menu-node.active) {
+  --rw-center-parent-title: attr(data-name);
 }
-.menu-node.child.hovered:not(.active) > .label-layer,
-.menu-node.parent.hovered:has(> .menu-node.active) > .label-layer { opacity: 1; }
+
+/* Render the parent's actual name inside the ACTIVE circle, whose origin is
+   always the current menu center. The pseudo-element has no independent
+   transform or Kando-relative ancestor offset, including at nested depths. */
+.menu-node.parent.hovered > .menu-node.active > .label-layer::after {
+  content: var(--rw-center-parent-title);
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
+  padding: var(--rw-title-padding-y) var(--rw-title-padding-x);
+  color: var(--text-color);
+  font-size: var(--rw-title-font-size);
+  font-weight: 700;
+  line-height: 1.25;
+  text-align: center;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  word-break: normal;
+  text-wrap: balance;
+  pointer-events: none;
+}
+
+/* Child labels use the already-centered child-distance cancellation.
+   Do not also display the parent label at its actual (offset) DOM location. */
+/* Only a hovered CHILD of the CURRENT active menu may show its title.
+   A formerly hovered item becomes a parent/ancestor when navigating, so its
+   old label must not fade out at its former coordinates. */
+.menu-node.active > .menu-node.child.hovered > .label-layer { opacity: 1; }
+.menu-node.parent > .label-layer,
+.menu-node.grandchild > .label-layer {
+  visibility: hidden;
+  opacity: 0 !important;
+  transition: none !important;
+}
 
 .menu-node .connector,
 .center-text { display: none !important; }
+
+/* Mangosteen experimental transition: Cascade — Волна по кругу.
+   Kando has no navigation direction selector; same entrance runs when opening
+   a submenu and when returning to its parent. The plate remains stationary,
+   and dedicated .back-wedge-layer avoids old hover-color carry-over.
+   --rw-demo-speed defaults to 1. For browser preview only, you may change it. */
+#kando-menu { --rw-level-ms: 190ms; }
+.menu-node.child > .wedge-layer,
+.menu-node.parent > .menu-node.active > .back-wedge-layer {
+  animation: mangosteen-level-wedge calc(190ms * var(--rw-demo-speed, 1)) var(--rw-ease-out) backwards;
+}
+.menu-node.child > .icon-layer > .icon-container {
+  animation: mangosteen-level-icon calc(190ms * var(--rw-demo-speed, 1)) var(--rw-ease-out) backwards;
+}
+@keyframes mangosteen-level-wedge { from { opacity: 0; transform: scale(.9); } }
+@keyframes mangosteen-level-icon { from { opacity: 0; scale: .74; } }
+
+/* Per-direction staggering, no assumptions about child count or DOM child indices. */
+.menu-node.child > .wedge-layer,
+.menu-node.child > .icon-layer > .icon-container {
+  animation-delay: calc((1 + sin(var(--start-angle, 0deg))) * 34ms * var(--rw-demo-speed, 1));
+}
+.menu-node.parent > .menu-node.active > .back-wedge-layer {
+  animation-delay: calc(22ms * var(--rw-demo-speed, 1));
+}
+
